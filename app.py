@@ -1,8 +1,10 @@
-from flask import Flask, render_template, request, flash
+from flask import Flask, render_template, request, flash, url_for, redirect
 from flask_sqlalchemy import SQLAlchemy  # 导入扩展类
+from werkzeug.security import generate_password_hash, check_password_hash  #存储登录所需的用户名和密码散列值
 import os
 import sys
 import click
+from flask_login import LoginManager, UserMixin, login_user, logout_user, login_required, current_user
 
 WIN = sys.platform.startswith('win')
 if WIN:  # 如果是 Windows 系统，使用三个斜线
@@ -14,6 +16,8 @@ app = Flask(__name__)
 # 将根目录下的data.db设置为SQLite数据库  sqlite:////：数据库文件的绝对地址（windows系统三个斜杠即可）
 app.config['SQLALCHEMY_DATABASE_URI'] = prefix + os.path.join(app.root_path, 'data.db')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False  # 关闭对模型修改的监控
+app.config['SESSION_TYPE'] = 'filesystem'
+app.config['SECRET_KEY'] = os.urandom(24)
 # 在扩展类实例化前加载配置
 db = SQLAlchemy(app)  # 初始化扩展，传入程序实例 app
 
@@ -22,9 +26,30 @@ db = SQLAlchemy(app)  # 初始化扩展，传入程序实例 app
 def initdb(drop):
     """Initialize/reset the database. Make sure the database is up to date"""
     if drop:  # 判断是否输入了选项控制，如果命令行中包含了--drop, drop为True，否则为False
-        db.drop_all()  # 删除表后
-    db.create_all()   # 创建表
+        db.drop_all()  # 将删除数据库中的所有表 
+    db.create_all()   # 基于您的 SQLAlchemy 模型创建所有表
     click.echo('Initialized database.')  # 输出提示信息
+
+@app.cli.command()
+@click.option('--username', prompt=True, help='The username used to login.')  # 提示用户输入用户名
+@click.option('--password', prompt=True, hide_input=True, confirmation_prompt=True, help='The password used to login.')  # 提示用户输入密码
+def admin(username, password):
+    """Create user."""
+    db.create_all()  # 创建数据库中定义的所有表，初始化数据库
+
+    user = User.query.first()  # 查询数据库中的第一个用户，用于检查是否已经有用户存在
+    if user is not None:  # 如果已存在用户 
+        click.echo('Updating user...')
+        user.username = username
+        user.set_password(password)  # 设置密码
+    else:
+        click.echo('Creating user...')
+        user = User(username=username, name='Admin')
+        user.set_password(password)  # 设置密码
+        db.session.add(user)   # 将更改提交至数据库
+
+    db.session.commit()  # 提交数据库会话
+    click.echo('Done.')
 
 @app.cli.command()
 def forge():
@@ -58,14 +83,25 @@ def forge():
     click.echo('Done.')
 
 # 创建数据库模型,模型类要声明继承db.Model
-class User(db.Model):  # 表名将会是 user（自动生成，小写处理）
-    id = db.Column(db.Integer, primary_key=True)  # 主键  db.Column() 实例化
-    name = db.Column(db.String(20))  # 名字
+class User(db.Model, UserMixin):
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(20))
+    username = db.Column(db.String(20))  # 用户名
+    password_hash = db.Column(db.String(128))  # 密码散列值
+
+    def set_password(self, password):  # 用来设置密码的方法，接受密码作为参数
+        self.password_hash = generate_password_hash(password)  # 将生成的密码保持到对应字段
+
+    def validate_password(self, password):  # 用于验证密码的方法，接受密码作为参数
+        return check_password_hash(self.password_hash, password)  # 返回布尔值
+    
 
 class Movie(db.Model):  # 表名将会是 movie
     id = db.Column(db.Integer, primary_key=True)  # 主键
     title = db.Column(db.String(60))  # 电影标题
     year = db.Column(db.String(4))  # 电影年份
+
+
 
 @app.errorhandler(404)  # 传入要处理的错误代码
 def page_not_found(e):  # 接受异常对象作为参数
@@ -80,6 +116,8 @@ def inject_user():  # 函数名可以随意修改
 @app.route('/', methods=['GET', 'POST'])
 def index():
     if request.method == 'POST':  # 判断是否是 POST 请求
+        if not current_user.is_authenticated:  # 如果当前用户未认证
+            return redirect(url_for('index'))  # 重定向到主页
         # 获取表单数据
         title = request.form.get('title')  # 传入表单对应输入字段的 name 值
         year = request.form.get('year')
@@ -126,3 +164,67 @@ def delete(movie_id):
     db.session.commit()  # 提交数据库会话
     flash('Item deleted.')
     return redirect(url_for('index'))  # 重定向回主页
+
+
+# 初始化Flask-Login
+login_manager = LoginManager(app)  # 实例化扩展类
+
+@login_manager.user_loader
+def load_user(user_id):  # 创建用户加载回调函数，接受用户 ID 作为参数
+    user = User.query.get(int(user_id))  # 用 ID 作为 User 模型的主键查询对应的用户
+    return user  # 返回用户对象
+
+login_manager.login_view = 'login'  # 重定向至登陆视图端点
+# login_manager.login_message = 'Your custom message'
+
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    if request.method == 'POST':
+        username = request.form['username']
+        password = request.form['password']
+
+        if not username or not password:
+            flash('Invalid input.')
+            return redirect(url_for('login'))
+
+        user = User.query.first()
+        # 验证用户名和密码是否一致
+        if username == user.username and user.validate_password(password):
+            login_user(user)  # 登入用户
+            flash('Login success.')
+            return redirect(url_for('index'))  # 重定向到主页
+
+        flash('Invalid username or password.')  # 如果验证失败，显示错误消息
+        return redirect(url_for('login'))  # 重定向回登录页面
+
+    return render_template('login.html')
+
+@app.route('/logout')
+@login_required  # 用于视图保护，后面会详细介绍
+def logout():
+    logout_user()  # 登出用户
+    flash('Goodbye.')
+    return redirect(url_for('index'))  # 重定向回首页
+
+
+# 设置页面
+@app.route('/settings', methods=['GET', 'POST'])
+@login_required
+def settings():
+    if request.method == 'POST':
+        name = request.form['name']
+
+        if not name or len(name) > 20:
+            flash('Invalid input.')
+            return redirect(url_for('settings'))
+
+        current_user.name = name
+        # current_user 会返回当前登录用户的数据库记录对象
+        # 等同于下面的用法
+        # user = User.query.first()
+        # user.name = name
+        db.session.commit()
+        flash('Settings updated.')
+        return redirect(url_for('index'))
+
+    return render_template('settings.html')

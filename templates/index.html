@@ -1,12 +1,26 @@
-    {% extends 'base.html' %}  <!-- #声明扩展自模板 base.html, 可以理解成 这个模板继承自 base.html #-->
-    <!--这里的内容会插入到基模板中content块的位置--默认覆盖 ##-->
-    {% block content %}   
+{% extends 'base.html' %}  
+<!-- #声明扩展自模板 base.html, 可以理解成 这个模板继承自 base.html #-->
+<!--这里的内容会插入到基模板中content块的位置--默认覆盖 ##-->
+{% block content %}   
     <p>{{ movies|length }} Titles</p>
+
+    <form method="post">
+        Name <input type="text" name="title" autocomplete="off" required>
+        Year <input type="text" name="year" autocomplete="off" required>
+        <input class="btn" type="submit" name="submit" value="Add">
+    </form>
+
 <ul class="movie-list">
     {% for movie in movies %}
     <li>{{ movie.title }} - {{ movie.year }}
-        <!--添加IMDb链接#--> 
-        <span class="float-right">  
+        <span class="float-right">
+            <!-- 编辑电影条目的链接 -->
+            <a class="btn" href="{{ url_for('edit', movie_id=movie.id) }}">Edit</a>
+            <!--删除电影条目表单-->
+            <form class="inline-form" method="post" action="{{ url_for('.delete', movie_id=movie.id) }}">
+                <input class="btn" type="submit" name="delete" value="Delete" onclick="return confirm('Are you sure?')">
+            </form>
+            <!-- 添加豆瓣链接 -->
             <a class="douban" href="https://movie.douban.com/subject_search?search_text={{ movie.title }}" target="_blank" title="Find this movie on douban">douban</a>
         </span>
     </li>
